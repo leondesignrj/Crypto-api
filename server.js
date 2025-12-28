@@ -12,11 +12,11 @@ app.get("/", (req, res) => {
 
 // --- FUNCIONES DEL ALGORITMO ---
 
-async function getHistorical(symbol = "BTCUSDT", interval = "1m", limit = 100) {
+async function getHistorical(symbol = "BTCUSDT", interval = "1m", limit = 50) {
   try {
     const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const res = await axios.get(url, { timeout: 5000 });
-    return res.data.map(k => ({
+    const response = await axios.get(url, { timeout: 5000 });
+    return response.data.map(k => ({
       open: parseFloat(k[1]),
       high: parseFloat(k[2]),
       low: parseFloat(k[3]),
@@ -24,8 +24,8 @@ async function getHistorical(symbol = "BTCUSDT", interval = "1m", limit = 100) {
       volume: parseFloat(k[5])
     }));
   } catch (err) {
-    console.error("Error fetching historical data:", err.message);
-    throw err;
+    console.error(`Error fetching ${symbol}:`, err.message);
+    return null; // Retorna null si hay error
   }
 }
 
@@ -61,55 +61,49 @@ const SHORT_EMA = 10;
 const LONG_EMA = 50;
 const RSI_PERIOD = 14;
 
-async function predictTrend(symbol = "BTCUSDT") {
-  try {
-    const historical = await getHistorical(symbol, "1m", 100);
-    const closes = historical.map(c => c.close);
+async function predictTrend(symbol) {
+  const historical = await getHistorical(symbol);
+  if (!historical) return { symbol, trend: "error" };
 
-    const shortEMA = ema(closes, SHORT_EMA).pop();
-    const longEMA = ema(closes, LONG_EMA).pop();
-    const lastRSI = rsi(closes, RSI_PERIOD).pop();
+  const closes = historical.map(c => c.close);
+  if (closes.length < LONG_EMA) return { symbol, trend: "not enough data" };
 
-    let trend = "neutral";
-    if (shortEMA > longEMA && lastRSI < 70) trend = "bullish";
-    else if (shortEMA < longEMA && lastRSI > 30) trend = "bearish";
+  const shortEMA = ema(closes, SHORT_EMA).pop();
+  const longEMA = ema(closes, LONG_EMA).pop();
+  const lastRSI = rsi(closes, RSI_PERIOD).pop();
 
-    return { symbol, trend, shortEMA, longEMA, lastRSI };
-  } catch (err) {
-    console.error("Prediction error:", err.message);
-    return { symbol, trend: "error" };
-  }
+  let trend = "neutral";
+  if (shortEMA > longEMA && lastRSI < 70) trend = "bullish";
+  else if (shortEMA < longEMA && lastRSI > 30) trend = "bearish";
+
+  return { symbol, trend, shortEMA, longEMA, lastRSI };
 }
 
-// --- ENDPOINTS PARA CATEGORÍAS ---
+// --- ENDPOINTS ---
 
 app.get("/predict/stable", async (req, res) => {
-  try {
-    const results = [];
-    for (const symbol of ["BTCUSDT", "ETHUSDT"]) {
-      const trend = await predictTrend(symbol);
-      results.push(trend);
-    }
-    res.json({ category: "stable", data: results });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  const symbols = ["BTCUSDT", "ETHUSDT"];
+  const results = [];
+  for (const symbol of symbols) {
+    const trend = await predictTrend(symbol);
+    results.push(trend);
   }
+  res.json({ category: "stable", data: results });
 });
 
 app.get("/predict/alt", async (req, res) => {
-  try {
-    const symbols = ["LBRUSDT", "DOGEUSDT", "LTCUSDT"];
-    const results = [];
-    for (const symbol of symbols) {
-      const trend = await predictTrend(symbol);
-      results.push(trend);
-    }
-    res.json({ category: "alt", data: results });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  const symbols = ["DOGEUSDT", "LTCUSDT"];
+  const results = [];
+  for (const symbol of symbols) {
+    const trend = await predictTrend(symbol);
+    results.push(trend);
   }
+  res.json({ category: "alt", data: results });
 });
 
+// --- LEVANTAR SERVIDOR ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
 // --- LEVANTAR SERVIDOR ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
