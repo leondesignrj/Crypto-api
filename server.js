@@ -11,21 +11,16 @@ app.get("/", (req, res) => {
 });
 
 // --- FUNCIONES DEL ALGORITMO ---
-
-async function getHistorical(symbol = "BTCUSDT", interval = "1m", limit = 50) {
+async function getHistorical(symbol = "bitcoin", limit = 50) {
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const url = `https://api.coingecko.com/api/v3/coins/${symbol}/market_chart?vs_currency=usd&days=1&interval=minutely`;
     const response = await axios.get(url, { timeout: 5000 });
-    return response.data.map(k => ({
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5])
-    }));
+    // CoinGecko devuelve [timestamp, price], usamos solo price
+    const prices = response.data.prices.slice(-limit).map(p => p[1]);
+    return prices;
   } catch (err) {
     console.error(`Error fetching ${symbol}:`, err.message);
-    return null; // Retorna null si hay error
+    return null;
   }
 }
 
@@ -65,12 +60,11 @@ async function predictTrend(symbol) {
   const historical = await getHistorical(symbol);
   if (!historical) return { symbol, trend: "error" };
 
-  const closes = historical.map(c => c.close);
-  if (closes.length < LONG_EMA) return { symbol, trend: "not enough data" };
+  if (historical.length < LONG_EMA) return { symbol, trend: "not enough data" };
 
-  const shortEMA = ema(closes, SHORT_EMA).pop();
-  const longEMA = ema(closes, LONG_EMA).pop();
-  const lastRSI = rsi(closes, RSI_PERIOD).pop();
+  const shortEMA = ema(historical, SHORT_EMA).pop();
+  const longEMA = ema(historical, LONG_EMA).pop();
+  const lastRSI = rsi(historical, RSI_PERIOD).pop();
 
   let trend = "neutral";
   if (shortEMA > longEMA && lastRSI < 70) trend = "bullish";
@@ -80,9 +74,8 @@ async function predictTrend(symbol) {
 }
 
 // --- ENDPOINTS ---
-
 app.get("/predict/stable", async (req, res) => {
-  const symbols = ["BTCUSDT", "ETHUSDT"];
+  const symbols = ["bitcoin", "ethereum"];
   const results = [];
   for (const symbol of symbols) {
     const trend = await predictTrend(symbol);
@@ -92,7 +85,7 @@ app.get("/predict/stable", async (req, res) => {
 });
 
 app.get("/predict/alt", async (req, res) => {
-  const symbols = ["DOGEUSDT", "LTCUSDT"];
+  const symbols = ["dogecoin", "litecoin"];
   const results = [];
   for (const symbol of symbols) {
     const trend = await predictTrend(symbol);
@@ -104,8 +97,3 @@ app.get("/predict/alt", async (req, res) => {
 // --- LEVANTAR SERVIDOR ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
-// --- LEVANTAR SERVIDOR ---
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
-});
