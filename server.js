@@ -68,4 +68,50 @@ async function predictTrend(symbol = "BTCUSDT") {
 
     const shortEMA = ema(closes, SHORT_EMA).pop();
     const longEMA = ema(closes, LONG_EMA).pop();
-    const lastRSI =
+    const lastRSI = rsi(closes, RSI_PERIOD).pop();
+
+    let trend = "neutral";
+    if (shortEMA > longEMA && lastRSI < 70) trend = "bullish";
+    else if (shortEMA < longEMA && lastRSI > 30) trend = "bearish";
+
+    return { symbol, trend, shortEMA, longEMA, lastRSI };
+  } catch (err) {
+    console.error("Prediction error:", err.message);
+    return { symbol, trend: "error" };
+  }
+}
+
+// --- ENDPOINTS PARA CATEGORÍAS ---
+
+app.get("/predict/stable", async (req, res) => {
+  try {
+    const results = [];
+    for (const symbol of ["BTCUSDT", "ETHUSDT"]) {
+      const trend = await predictTrend(symbol);
+      results.push(trend);
+    }
+    res.json({ category: "stable", data: results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/predict/alt", async (req, res) => {
+  try {
+    const symbols = ["LBRUSDT", "DOGEUSDT", "LTCUSDT"];
+    const results = [];
+    for (const symbol of symbols) {
+      const trend = await predictTrend(symbol);
+      results.push(trend);
+    }
+    res.json({ category: "alt", data: results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- LEVANTAR SERVIDOR ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor activo en puerto ${PORT}`);
+});
