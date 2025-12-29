@@ -168,8 +168,6 @@ async function predictTrend(symbol) {
     horizons,
     rsi: Number(lastRSI.toFixed(2))
   };
-}
-
 
   // Porcentaje de predicción
   const emaDiff = Math.abs(shortEMA - longEMA) / longEMA;
