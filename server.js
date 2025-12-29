@@ -140,7 +140,7 @@ app.get("/predict/stable", async (req, res) => {
 });
 
 app.get("/predict/alt", async (req, res) => {
-  const symbols = ["DOGEUSDT", "LTCUSDT", "XRPUSDT"]; // reemplazar por altcoins activas
+  const symbols = ["PAXGUSDT", "BNBUSDT", "XRPUSDT","SOLUSDT"]; // reemplazar por altcoins activas
   const results = [];
   for (const symbol of symbols) {
     results.push(await predictTrend(symbol));
