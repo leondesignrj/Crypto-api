@@ -179,6 +179,12 @@ app.get("/analyze", async (req, res) => {
   }
 });
 
+app.get("/signal", async (req, res) => {
+  const symbol = (req.query.symbol || "BTCUSDT").toUpperCase();
+  const result = await analyzeSymbol(symbol);
+  res.json(result);
+});
+
 app.listen(PORT, () => {
   console.log(`API running on port ${PORT}`);
 });
