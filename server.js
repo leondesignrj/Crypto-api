@@ -1,153 +1,198 @@
-// server.js
-const express = require("express");
-const axios = require("axios");
+import express from "express";
+import axios from "axios";
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 10000;
 
-// ===================
-// RUTA BASE
-// ===================
-app.get("/", (req, res) => {
-  res.send("API crypto funcionando");
-});
+/* =========================
+   CONFIG
+========================= */
 
-// ===================
-// FUNCIONES AUXILIARES
-// ===================
-async function getHistorical(symbol = "BTCUSDT", interval = "1d", limit = 1000) {
-  try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const response = await axios.get(url, { timeout: 10000 });
+const BINANCE_URL = "https://api.binance.com/api/v3/klines";
+const DAILY_INTERVAL = "1d";
+const MAX_LIMIT = 1000;
 
-    return response.data.map(k => ({
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5])
-    }));
-  } catch (err) {
-    console.error(`Error fetching ${symbol}:`, err.message);
-    return null;
-  }
-}
+/* =========================
+   HELPERS
+========================= */
 
-function ema(data, period) {
+function EMA(values, period) {
   const k = 2 / (period + 1);
-  let emaArray = [data[0]];
-
-  for (let i = 1; i < data.length; i++) {
-    emaArray.push(data[i] * k + emaArray[i - 1] * (1 - k));
+  let ema = values[0];
+  for (let i = 1; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
   }
-  return emaArray;
+  return ema;
 }
 
-function rsi(data, period) {
+function RSI(values, period = 14) {
   let gains = 0;
   let losses = 0;
 
-  for (let i = 1; i <= period; i++) {
-    const diff = data[i] - data[i - 1];
+  for (let i = values.length - period - 1; i < values.length - 1; i++) {
+    const diff = values[i + 1] - values[i];
     if (diff >= 0) gains += diff;
     else losses -= diff;
   }
 
-  let rs = gains / (losses || 1);
-  let rsiArr = [100 - 100 / (1 + rs)];
-
-  for (let i = period + 1; i < data.length; i++) {
-    const diff = data[i] - data[i - 1];
-    if (diff >= 0) gains = (gains * (period - 1) + diff) / period;
-    else losses = (losses * (period - 1) - diff) / period;
-
-    rs = gains / (losses || 1);
-    rsiArr.push(100 - 100 / (1 + rs));
-  }
-
-  return rsiArr;
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - 100 / (1 + rs);
 }
 
-// ===================
-// PARÁMETROS
-// ===================
-const SHORT_EMA = 10;
-const LONG_EMA = 50;
-const RSI_PERIOD = 14;
+function avg(values) {
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
 
-// ===================
-// ALGORITMO PRINCIPAL
-// ===================
-async function predictTrend(symbol) {
-  const historical = await getHistorical(symbol);
-  if (!historical) return { symbol, error: "no_data" };
+/* =========================
+   DATA FETCH
+========================= */
 
-  const closes = historical.map(c => c.close);
-  if (closes.length < LONG_EMA) {
-    return { symbol, error: "not_enough_data" };
+async function fetchAllDailyCandles(symbol) {
+  let candles = [];
+  let endTime = Date.now();
+
+  while (true) {
+    const res = await axios.get(BINANCE_URL, {
+      params: {
+        symbol,
+        interval: DAILY_INTERVAL,
+        limit: MAX_LIMIT,
+        endTime
+      }
+    });
+
+    if (res.data.length === 0) break;
+
+    candles = [...res.data, ...candles];
+    endTime = res.data[0][0] - 1;
+
+    if (res.data.length < MAX_LIMIT) break;
   }
 
-  const shortEMA = ema(closes, SHORT_EMA).pop();
-  const longEMA = ema(closes, LONG_EMA).pop();
-  const lastRSI = rsi(closes, RSI_PERIOD).pop();
+  return candles;
+}
 
+/* =========================
+   ANALYSIS CORE
+========================= */
+
+function analyzeMarket(candles) {
+  const closes = candles.map(c => parseFloat(c[4]));
+  const volumes = candles.map(c => parseFloat(c[5]));
+
+  const ema50 = EMA(closes.slice(-50), 50);
+  const ema200 = EMA(closes.slice(-200), 200);
+  const lastClose = closes[closes.length - 1];
+
+  const rsi = RSI(closes);
+  const avgVolume = avg(volumes.slice(-30));
+  const lastVolume = volumes[volumes.length - 1];
+
+  /* ---- Structure ---- */
   let trend = "neutral";
-  if (shortEMA > longEMA && lastRSI < 70) trend = "bullish";
-  else if (shortEMA < longEMA && lastRSI > 30) trend = "bearish";
+  if (lastClose > ema50 && ema50 > ema200) trend = "bullish";
+  if (lastClose < ema50 && ema50 < ema200) trend = "bearish";
 
-  let confidence = Math.abs(shortEMA - longEMA) / longEMA * 100;
-  confidence = Math.min(Math.max(confidence * 10, 5), 85);
+  /* ---- Momentum ---- */
+  let momentum = false;
+  if (trend === "bullish" && rsi >= 55 && rsi <= 70) momentum = true;
+  if (trend === "bearish" && rsi <= 45 && rsi >= 30) momentum = true;
 
-  const continuation = confidence;
+  /* ---- Volume ---- */
+  const volumeConfirmed = lastVolume > avgVolume * 1.2;
+
+  /* ---- Scoring ---- */
+  let score = 0;
+  let contributors = [];
+
+  if (trend !== "neutral") {
+    score += 2;
+    contributors.push("structure");
+  }
+  if (momentum) {
+    score += 1;
+    contributors.push("momentum");
+  }
+  if (volumeConfirmed) {
+    score += 1;
+    contributors.push("volume");
+  }
+
+  /* ---- Strength ---- */
+  let level = "INVALID";
+  if (score >= 2) level = "VALID";
+  if (score >= 4) level = "STRONG";
+
+  /* ---- Percentages ---- */
+  const continuation = Math.min(75, score * 15);
   const reversal = 100 - continuation;
 
-  const volatility =
-    closes.slice(-30).reduce((acc, val, i, arr) => {
-      if (i === 0) return acc;
-      return acc + Math.abs(val - arr[i - 1]) / arr[i - 1];
-    }, 0) / 30;
+  /* ---- Signal Type ---- */
+  let signal = "HOLD";
+  if (level === "STRONG" && Math.abs(rsi - 50) < 5) signal = "SCALP";
+  if (level === "STRONG" && Math.abs(rsi - 50) >= 5) signal = "SWING";
 
-  let risk = "low";
-  if (volatility > 0.05 || lastRSI > 70 || lastRSI < 30) risk = "high";
-  else if (volatility > 0.025) risk = "medium";
-
-  let signal = "NO_OPERAR";
-  if (trend === "bullish" && confidence > 70) signal = "HOLD";
-  else if (trend === "bullish" && confidence > 60 && risk !== "high") signal = "SWING";
-  else if (trend !== "neutral" && confidence > 45) signal = "SCALP";
-
-  const horizons = {
-    "7d": Math.min(confidence + 5, 90),
-    "30d": confidence,
-    "90d": Math.max(confidence - 10, 10)
-  };
+  /* ---- Invalidation ---- */
+  let invalidation;
+  if (trend === "bullish") invalidation = ema50;
+  if (trend === "bearish") invalidation = ema50;
 
   return {
-    symbol,
     trend,
-    confidence: Number(confidence.toFixed(2)),
+    rsi: Number(rsi.toFixed(2)),
+    volumeRatio: Number((lastVolume / avgVolume).toFixed(2)),
+    score,
+    strength: {
+      level,
+      contributors
+    },
     continuation: Number(continuation.toFixed(2)),
     reversal: Number(reversal.toFixed(2)),
-    risk,
     signal,
-    horizons,
-    rsi: Number(lastRSI.toFixed(2))
+    invalidation: Number(invalidation.toFixed(4)),
+    horizons: {
+      "7d": continuation + 5,
+      "30d": continuation,
+      "90d": continuation - 10
+    }
   };
 }
 
-// ===================
-// ENDPOINTS
-// ===================
-app.get("/predict", async (req, res) => {
-  const symbol = req.query.symbol || "BTCUSDT";
-  const result = await predictTrend(symbol);
-  res.json(result);
+/* =========================
+   ROUTE
+========================= */
+
+app.get("/analyze", async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    if (!symbol) {
+      return res.status(400).json({ error: "symbol is required" });
+    }
+
+    const candles = await fetchAllDailyCandles(symbol.toUpperCase());
+    if (candles.length < 200) {
+      return res.status(400).json({ error: "not enough historical data" });
+    }
+
+    const analysis = analyzeMarket(candles);
+
+    res.json({
+      symbol: symbol.toUpperCase(),
+      ...analysis
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: "analysis failed",
+      details: err.message
+    });
+  }
 });
 
-// ===================
-// SERVIDOR
-// ===================
-const PORT = process.env.PORT || 3000;
+/* =========================
+   START
+========================= */
+
 app.listen(PORT, () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
+  console.log(`API running on port ${PORT}`);
 });
