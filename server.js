@@ -181,7 +181,7 @@ app.get("/analyze", async (req, res) => {
 
 app.get("/signal", async (req, res) => {
   const symbol = (req.query.symbol || "BTCUSDT").toUpperCase();
-  const result = await analyzeSymbol(symbol);
+  const result = await analyze(symbol);
   res.json(result);
 });
 
