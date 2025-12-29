@@ -1,14 +1,12 @@
 {
-  "name": "crypto-api",
+  "name": "crypto.api",
   "version": "1.0.0",
-  "description": "Crypto market analysis and prediction API",
-  "type": "module",
-  "main": "server.js",
+  "main": "server.cjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.cjs"
   },
   "dependencies": {
-    "axios": "^1.6.8",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "axios": "^1.6.0"
   }
 }
