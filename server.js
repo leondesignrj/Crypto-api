@@ -109,10 +109,14 @@ const RSI_PERIOD = 14;
 
 // Predecir tendencia con porcentaje
 async function predictTrend(symbol) {
-  const historical = await getHistoricalCached(symbol);
-  if (!historical || historical.length < LONG_EMA) return { symbol, trend: "error", probability: 0 };
+  const historical = await getHistorical(symbol, "1d", 1000);
+  if (!historical) return { symbol, error: "no_data" };
 
   const closes = historical.map(c => c.close);
+  if (closes.length < LONG_EMA) {
+    return { symbol, error: "not_enough_data" };
+  }
+
   const shortEMA = ema(closes, SHORT_EMA).pop();
   const longEMA = ema(closes, LONG_EMA).pop();
   const lastRSI = rsi(closes, RSI_PERIOD).pop();
@@ -120,6 +124,52 @@ async function predictTrend(symbol) {
   let trend = "neutral";
   if (shortEMA > longEMA && lastRSI < 70) trend = "bullish";
   else if (shortEMA < longEMA && lastRSI > 30) trend = "bearish";
+
+  // ---- PORCENTAJE DE CONFIANZA ----
+  let confidence = Math.abs(shortEMA - longEMA) / longEMA * 100;
+  confidence = Math.min(Math.max(confidence * 10, 5), 85);
+
+  // ---- CONTINUACIÓN vs REVERSIÓN ----
+  const continuation = confidence;
+  const reversal = 100 - continuation;
+
+  // ---- VOLATILIDAD ----
+  const volatility =
+    closes.slice(-30).reduce((acc, val, i, arr) => {
+      if (i === 0) return acc;
+      return acc + Math.abs(val - arr[i - 1]) / arr[i - 1];
+    }, 0) / 30;
+
+  let risk = "low";
+  if (volatility > 0.05 || lastRSI > 70 || lastRSI < 30) risk = "high";
+  else if (volatility > 0.025) risk = "medium";
+
+  // ---- SEÑAL HUMANA ----
+  let signal = "NO_OPERAR";
+  if (trend === "bullish" && confidence > 60 && risk !== "high") signal = "SWING";
+  else if (trend !== "neutral" && confidence > 45) signal = "SCALP";
+  else if (trend === "bullish" && confidence > 70) signal = "HOLD";
+
+  // ---- HORIZONTES ----
+  const horizons = {
+    "7d": Math.min(confidence + 5, 90),
+    "30d": confidence,
+    "90d": Math.max(confidence - 10, 10)
+  };
+
+  return {
+    symbol,
+    trend,
+    confidence: Number(confidence.toFixed(2)),
+    continuation: Number(continuation.toFixed(2)),
+    reversal: Number(reversal.toFixed(2)),
+    risk,
+    signal,
+    horizons,
+    rsi: Number(lastRSI.toFixed(2))
+  };
+}
+
 
   // Porcentaje de predicción
   const emaDiff = Math.abs(shortEMA - longEMA) / longEMA;
