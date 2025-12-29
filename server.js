@@ -1,222 +1,209 @@
-import express from "express";
-import axios from "axios";
+const express = require("express");
+const axios = require("axios");
 
 const app = express();
-const PORT = 10000;
-
-const BINANCE_API = "https://api.binance.com/api/v3";
+app.use(express.json());
 
 /* =========================
-   CONFIGURACIÓN BASE
+   CONFIG
 ========================= */
 
-const BASE_INTERVAL = "1d";
-const BASE_LIMIT = 1000;
+const PORT = process.env.PORT || 10000;
+const BINANCE_URL = "https://api.binance.com/api/v3/klines";
+
+// indicadores
+const RSI_PERIOD = 14;
+const SHORT_EMA = 20;
+const LONG_EMA = 50;
+
+// pesos para confidence
+const WEIGHTS = {
+  trend: 40,
+  rsi: 20,
+  volume: 15,
+  orderbook: 15,
+  sentiment: 10
+};
 
 /* =========================
    UTILIDADES
 ========================= */
 
-function EMA(values, period) {
+function ema(data, period) {
   const k = 2 / (period + 1);
-  let ema = values[0];
-  for (let i = 1; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
+  let emaPrev = data[0];
+  for (let i = 1; i < data.length; i++) {
+    emaPrev = data[i] * k + emaPrev * (1 - k);
   }
-  return ema;
+  return emaPrev;
 }
 
-function RSI(values, period = 14) {
-  let gains = 0;
-  let losses = 0;
+function rsi(data, period) {
+  let gains = 0, losses = 0;
 
   for (let i = 1; i <= period; i++) {
-    const diff = values[i] - values[i - 1];
+    const diff = data[i] - data[i - 1];
     if (diff >= 0) gains += diff;
     else losses -= diff;
   }
 
-  const rs = gains / (losses || 1);
-  return 100 - 100 / (1 + rs);
-}
+  let rs = gains / (losses || 1);
+  let rsiVal = 100 - 100 / (1 + rs);
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+  for (let i = period + 1; i < data.length; i++) {
+    const diff = data[i] - data[i - 1];
+    if (diff >= 0) gains = (gains * (period - 1) + diff) / period;
+    else losses = (losses * (period - 1) - diff) / period;
+
+    rs = gains / (losses || 1);
+    rsiVal = 100 - 100 / (1 + rs);
+  }
+
+  return rsiVal;
 }
 
 /* =========================
-   MARKET DATA
+   DATA BINANCE
 ========================= */
 
-async function getKlines(symbol) {
-  const { data } = await axios.get(`${BINANCE_API}/klines`, {
-    params: {
-      symbol,
-      interval: BASE_INTERVAL,
-      limit: BASE_LIMIT,
-    },
-  });
+async function getDailyHistory(symbol) {
+  try {
+    const res = await axios.get(BINANCE_URL, {
+      params: {
+        symbol,
+        interval: "1d",
+        limit: 1000
+      },
+      timeout: 8000
+    });
 
-  return data.map(k => ({
-    close: parseFloat(k[4]),
-    volume: parseFloat(k[5]),
-  }));
-}
-
-async function getOrderBook(symbol) {
-  const { data } = await axios.get(`${BINANCE_API}/depth`, {
-    params: { symbol, limit: 50 },
-  });
-
-  const bids = data.bids.reduce((a, b) => a + parseFloat(b[1]), 0);
-  const asks = data.asks.reduce((a, b) => a + parseFloat(b[1]), 0);
-
-  return bids / (asks || 1);
+    return res.data.map(k => ({
+      open: +k[1],
+      high: +k[2],
+      low: +k[3],
+      close: +k[4],
+      volume: +k[5]
+    }));
+  } catch (err) {
+    return null;
+  }
 }
 
 /* =========================
-   SENTIMIENTO (placeholder)
-========================= */
-
-function getSentimentScore() {
-  // placeholder: luego se conecta a noticias / social
-  return clamp(Math.random(), 0.3, 0.7);
-}
-
-/* =========================
-   ANÁLISIS PRINCIPAL
+   CORE ANALYSIS
 ========================= */
 
 async function analyzeSymbol(symbol) {
-  const klines = await getKlines(symbol);
-  const closes = klines.map(k => k.close);
-  const volumes = klines.map(k => k.volume);
+  const history = await getDailyHistory(symbol);
+  if (!history || history.length < LONG_EMA) {
+    return { symbol, error: "Not enough data" };
+  }
 
-  const emaShort = EMA(closes.slice(-50), 50);
-  const emaLong = EMA(closes.slice(-200), 200);
-  const rsi = RSI(closes.slice(-15));
+  const closes = history.map(c => c.close);
+  const volumes = history.map(c => c.volume);
 
-  const volumeAvg = volumes.slice(-30).reduce((a, b) => a + b, 0) / 30;
-  const volumeRatio = volumes[volumes.length - 1] / (volumeAvg || 1);
+  const shortEMA = ema(closes.slice(-SHORT_EMA), SHORT_EMA);
+  const longEMA = ema(closes.slice(-LONG_EMA), LONG_EMA);
+  const lastRSI = rsi(closes.slice(-(RSI_PERIOD + 1)), RSI_PERIOD);
 
-  const orderbookRatio = await getOrderBook(symbol);
-  const sentiment = getSentimentScore();
+  const trend =
+    shortEMA > longEMA ? "bullish" :
+    shortEMA < longEMA ? "bearish" :
+    "neutral";
 
-  /* =========================
-     TREND BASE
-  ========================= */
+  /* -------- SCORE COMPONENTS -------- */
 
-  let trend = "neutral";
-  if (emaShort > emaLong) trend = "bullish";
-  if (emaShort < emaLong) trend = "bearish";
+  const trendScore =
+    trend === "bullish" ? 100 :
+    trend === "bearish" ? 100 :
+    50;
 
-  /* =========================
-     MARKET SCORE (0–100)
-  ========================= */
+  const rsiScore =
+    trend === "bullish" ? Math.max(0, 100 - Math.abs(50 - lastRSI) * 2) :
+    trend === "bearish" ? Math.max(0, 100 - Math.abs(50 - lastRSI) * 2) :
+    50;
 
-  let marketScore = 0;
-  if (trend !== "neutral") marketScore += 25;
-  if (volumeRatio > 0.8) marketScore += 20;
-  if (orderbookRatio > 1 && trend === "bullish") marketScore += 20;
-  if (orderbookRatio < 1 && trend === "bearish") marketScore += 20;
-  if (rsi > 40 && rsi < 60) marketScore += 15;
+  const avgVolume = volumes.slice(-30).reduce((a, b) => a + b, 0) / 30;
+  const volumeRatio = volumes.at(-1) / avgVolume;
+  const volumeScore = Math.min(100, volumeRatio * 100);
 
-  marketScore = clamp(marketScore, 0, 100);
+  // orderbook y sentimiento simulados (placeholder)
+  const orderbookRatio = 1;
+  const orderbookScore = 50;
 
-  /* =========================
-     CONFIDENCE NORMALIZADO
-  ========================= */
+  const sentiment = 0.5;
+  const sentimentScore = sentiment * 100;
 
-  const confidence = clamp(
-    marketScore * 0.6 +
-    sentiment * 20 +
-    volumeRatio * 20,
-    0,
-    100
-  );
+  /* -------- CONFIDENCE NORMALIZADO -------- */
 
-  /* =========================
-     INVALIDACIÓN / NO TRADE
-  ========================= */
+  const confidence =
+    trendScore * WEIGHTS.trend / 100 +
+    rsiScore * WEIGHTS.rsi / 100 +
+    volumeScore * WEIGHTS.volume / 100 +
+    orderbookScore * WEIGHTS.orderbook / 100 +
+    sentimentScore * WEIGHTS.sentiment / 100;
 
-  let signal_strength = "VALID";
-  let signal_type = "SWING";
+  const confidenceRounded = Math.round(confidence * 100) / 100;
+
+  /* -------- INVALIDATION RULES -------- */
 
   const invalidations = [];
 
-  if (marketScore < 45) invalidations.push("market_score < 45");
-  if (volumeRatio < 0.6) invalidations.push("volume_ratio < 0.6");
-  if (
-    (trend === "bullish" && orderbookRatio < 1) ||
-    (trend === "bearish" && orderbookRatio > 1)
-  ) invalidations.push("orderbook contradicts trend");
+  if (confidenceRounded < 45) invalidations.push("confidence < 45");
+  if (trend === "bullish" && lastRSI > 70) invalidations.push("RSI overbought");
+  if (trend === "bearish" && lastRSI < 30) invalidations.push("RSI oversold");
+  if (volumeRatio < 0.6) invalidations.push("low volume");
 
-  if (invalidations.length >= 3) {
-    signal_strength = "INVALID";
-    signal_type = "HOLD";
-  } else if (invalidations.length >= 1) {
-    signal_strength = "NO_TRADE";
-    signal_type = "HOLD";
-  } else if (confidence > 65) {
-    signal_strength = "STRONG";
-    signal_type = "SWING";
-  }
+  const signalStrength =
+    invalidations.length > 0 ? "INVALID" :
+    confidenceRounded >= 70 ? "STRONG" :
+    "WEAK";
 
-  if (signal_strength !== "STRONG" && Math.abs(rsi - 50) < 5) {
-    signal_type = "SCALP";
-  }
+  const signalType =
+    signalStrength === "INVALID" ? "NO_TRADE" :
+    trend === "bullish" ? "LONG" :
+    trend === "bearish" ? "SHORT" :
+    "HOLD";
 
-  /* =========================
-     HORIZONTES (CONTEXTO)
-  ========================= */
+  /* -------- TIME HORIZONS -------- */
 
-  const timeframes = {
-    "7d": {
-      bias: trend,
-      score: clamp(marketScore - 5, 0, 100),
-      confidence: clamp(confidence / 100, 0, 1),
-    },
-    "30d": {
-      bias: trend,
-      score: clamp(marketScore, 0, 100),
-      confidence: clamp(confidence / 100, 0, 1),
-    },
-    "90d": {
-      bias: trend === "bullish" ? "bullish" : "neutral",
-      score: clamp(marketScore + 5, 0, 100),
-      confidence: clamp(confidence / 100, 0, 1),
-    },
+  const horizons = {
+    "7d": Math.max(0, Math.min(100, confidenceRounded + (trend === "bullish" ? 5 : -5))),
+    "30d": confidenceRounded,
+    "90d": Math.max(0, Math.min(100, confidenceRounded - 10))
   };
 
   return {
     symbol,
     trend,
-    confidence: Number(confidence.toFixed(2)),
-    market_score: marketScore,
-    signal_strength,
-    signal_type,
-    volume_ratio: Number(volumeRatio.toFixed(2)),
-    orderbook_ratio: Number(orderbookRatio.toFixed(2)),
-    sentiment: Number(sentiment.toFixed(2)),
-    rsi: Number(rsi.toFixed(2)),
-    invalidated_if: invalidations,
-    timeframes,
+    confidence: confidenceRounded,
+    signal_strength: signalStrength,
+    signal_type: signalType,
+    rsi: Math.round(lastRSI * 100) / 100,
+    volume_ratio: Math.round(volumeRatio * 100) / 100,
+    sentiment,
+    horizons,
+    invalidated_if: invalidations
   };
 }
 
 /* =========================
-   ENDPOINT
+   ROUTES
 ========================= */
 
-app.get("/analyze", async (req, res) => {
-  try {
-    const symbol = req.query.symbol || "ETHUSDT";
-    const result = await analyzeSymbol(symbol.toUpperCase());
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/", (req, res) => {
+  res.send("Crypto API running");
 });
+
+app.get("/analyze", async (req, res) => {
+  const symbol = (req.query.symbol || "BTCUSDT").toUpperCase();
+  const result = await analyzeSymbol(symbol);
+  res.json(result);
+});
+
+/* =========================
+   SERVER
+========================= */
 
 app.listen(PORT, () => {
   console.log(`API running on port ${PORT}`);
